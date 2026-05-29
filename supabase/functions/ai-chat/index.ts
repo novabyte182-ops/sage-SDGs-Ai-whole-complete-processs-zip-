@@ -167,50 +167,27 @@ function containsSafetyKeywords(text: string): boolean {
   return safetyKeywords.some(keyword => lowerText.includes(keyword));
 }
 
-async function callAnthropic(messages: Array<{role: string, content: string}>, systemPrompt: string): Promise<string> {
-  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+// OpenRouter API call - supports multiple models via single API
+async function callOpenRouter(
+  messages: Array<{role: string, content: string}>,
+  systemPrompt: string,
+  model: string
+): Promise<string> {
+  const apiKey = Deno.env.get('OPENROUTER_API_KEY');
   if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY not configured');
+    throw new Error('OPENROUTER_API_KEY not configured');
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-3-5-haiku-20241022',
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: messages,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Anthropic API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return data.content?.[0]?.text || '';
-}
-
-async function callOpenAI(messages: Array<{role: string, content: string}>, systemPrompt: string): Promise<string> {
-  const apiKey = Deno.env.get('OPENAI_API_KEY');
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY not configured');
-  }
-
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://sage-sdg-action.lovable.app',
+      'X-Title': 'Sage SDGs AI',
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: model,
       max_tokens: 1024,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -221,38 +198,7 @@ async function callOpenAI(messages: Array<{role: string, content: string}>, syst
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`OpenAI API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || '';
-}
-
-async function callNVIDIA(messages: Array<{role: string, content: string}>, systemPrompt: string): Promise<string> {
-  const apiKey = Deno.env.get('NVIDIA_API_KEY');
-  if (!apiKey) {
-    throw new Error('NVIDIA_API_KEY not configured');
-  }
-
-  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'meta/llama-3.1-8b-instruct',
-      max_tokens: 1024,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages,
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`NVIDIA API error: ${response.status} - ${error}`);
+    throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
   }
 
   const data = await response.json();
@@ -398,49 +344,30 @@ Deno.serve(async (req: Request) => {
       { role: "user", content: message }
     ];
 
-    let response: string;
+    let response: string | undefined;
     let providerUsed: string;
-    let attemptedProviders: string[] = [];
-
-    // Try providers in order: Anthropic first, then OpenAI
-    const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
-    const openaiKey = Deno.env.get('OPENAI_API_KEY');
-    const preferredProvider = Deno.env.get('AI_PROVIDER');
-
-    // Define attempt order - Anthropic primary, OpenAI secondary
-    const providers = [];
-    if (preferredProvider === 'openai' && openaiKey) {
-      providers.push('openai');
-    }
-    if (anthropicKey && !providers.includes('anthropic')) {
-      providers.push('anthropic');
-    }
-    if (openaiKey && !providers.includes('openai')) {
-      providers.push('openai');
-    }
-
     let lastError: string | null = null;
 
-    for (const provider of providers) {
-      attemptedProviders.push(provider);
-      try {
-        if (provider === 'anthropic') {
-          response = await callAnthropic(messages, agent.systemPrompt);
-          providerUsed = 'anthropic';
+    // Try OpenRouter with Claude Opus 4 first, then fallback to other models
+    const openrouterKey = Deno.env.get('OPENROUTER_API_KEY');
+    const models = [
+      'anthropic/claude-opus-4',           // Claude Opus 4 (primary)
+      'anthropic/claude-3.5-sonnet',       // Claude 3.5 Sonnet (fallback)
+      'anthropic/claude-3-haiku',          // Claude 3 Haiku (fast fallback)
+      'openai/gpt-4o-mini',                // GPT-4o mini (backup)
+    ];
+
+    if (openrouterKey) {
+      for (const model of models) {
+        try {
+          response = await callOpenRouter(messages, agent.systemPrompt, model);
+          providerUsed = `openrouter:${model}`;
           break;
-        } else if (provider === 'openai') {
-          response = await callOpenAI(messages, agent.systemPrompt);
-          providerUsed = 'openai';
-          break;
-        } else if (provider === 'nvidia') {
-          response = await callNVIDIA(messages, agent.systemPrompt);
-          providerUsed = 'nvidia';
-          break;
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+          console.error(`${model} error:`, lastError);
+          continue;
         }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-        console.error(`${provider} error:`, lastError);
-        continue;
       }
     }
 
@@ -449,7 +376,6 @@ Deno.serve(async (req: Request) => {
       response = getDemoResponse(selectedAgent, message);
       providerUsed = 'demo';
       console.error('All providers failed. Last error:', lastError);
-      console.error('Attempted providers:', attemptedProviders);
     }
 
     // Safety check for mindcare responses
@@ -462,7 +388,6 @@ Deno.serve(async (req: Request) => {
         response,
         agent: selectedAgent,
         provider: providerUsed,
-        attemptedProviders: attemptedProviders.length > 0 ? attemptedProviders : undefined,
         demoMode: providerUsed === 'demo',
         lastError: lastError || undefined,
       }),
