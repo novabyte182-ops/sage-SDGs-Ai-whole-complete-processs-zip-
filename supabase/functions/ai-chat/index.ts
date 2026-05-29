@@ -402,26 +402,22 @@ Deno.serve(async (req: Request) => {
     let providerUsed: string;
     let attemptedProviders: string[] = [];
 
-    // Try providers in order
+    // Try providers in order: Anthropic first, then OpenAI
     const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
     const openaiKey = Deno.env.get('OPENAI_API_KEY');
-    const nvidiaKey = Deno.env.get('NVIDIA_API_KEY');
     const preferredProvider = Deno.env.get('AI_PROVIDER');
 
-    // Define attempt order based on preferred provider
+    // Define attempt order - Anthropic primary, OpenAI secondary
     const providers = [];
-    if (preferredProvider === 'anthropic' && anthropicKey) {
-      providers.push('anthropic');
-    } else if (preferredProvider === 'openai' && openaiKey) {
+    if (preferredProvider === 'openai' && openaiKey) {
       providers.push('openai');
-    } else if (preferredProvider === 'nvidia' && nvidiaKey) {
-      providers.push('nvidia');
     }
-
-    // Add remaining providers
-    if (anthropicKey && !providers.includes('anthropic')) providers.push('anthropic');
-    if (openaiKey && !providers.includes('openai')) providers.push('openai');
-    if (nvidiaKey && !providers.includes('nvidia')) providers.push('nvidia');
+    if (anthropicKey && !providers.includes('anthropic')) {
+      providers.push('anthropic');
+    }
+    if (openaiKey && !providers.includes('openai')) {
+      providers.push('openai');
+    }
 
     let lastError: string | null = null;
 
