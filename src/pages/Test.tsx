@@ -1,8 +1,8 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Play, TriangleAlert as AlertTriangle, CircleCheck as CheckCircle, GraduationCap, Heart, Leaf, Sparkles } from 'lucide-react';
 import { testQuestions, testCategories } from '../data/testQuestions';
 import { AgentId } from '../types';
-import Chat from './Chat';
 
 const agentIcons: Record<string, React.ElementType> = {
   'sage-core': Sparkles,
@@ -19,26 +19,19 @@ const agentColors: Record<string, string> = {
 };
 
 export default function Test() {
-  const [selectedQuestion, setSelectedQuestion] = useState<{
-    agentId: AgentId;
-    question: string;
-  } | null>(null);
+  const navigate = useNavigate();
+  const [runningTestId, setRunningTestId] = useState<string | null>(null);
 
-  if (selectedQuestion) {
-    return (
-      <div className="min-h-[calc(100vh-8rem)]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <button
-            onClick={() => setSelectedQuestion(null)}
-            className="btn-secondary mb-6"
-          >
-            Back to Tests
-          </button>
-          <Chat />
-        </div>
-      </div>
-    );
-  }
+  const handleRunTest = (agentId: AgentId, question: string, testId: string) => {
+    setRunningTestId(testId);
+
+    // Navigate to chat with agent and question
+    // We'll store the question in sessionStorage to auto-send
+    sessionStorage.setItem('sage-test-question', question);
+    sessionStorage.setItem('sage-test-auto-send', 'true');
+
+    navigate(`/chat/${agentId}`);
+  };
 
   const groupedQuestions = testCategories.map((category) => {
     let agentId: AgentId = 'sage-core';
@@ -87,6 +80,15 @@ export default function Test() {
           </div>
         </div>
 
+        {/* Demo Mode Notice */}
+        <div className="glass-card p-4 mb-8 bg-blue-50 border-l-4 border-blue-400">
+          <p className="text-blue-800 text-sm">
+            <strong>Note:</strong> Tests run against the deployed Edge Function. If no API key is configured,
+            responses will be demo/fallback responses. Add API keys to your Supabase Edge Function secrets
+            for live AI responses.
+          </p>
+        </div>
+
         {/* Test Categories */}
         <div className="space-y-8">
           {groupedQuestions.map((group) => {
@@ -124,14 +126,12 @@ export default function Test() {
                           <p className="text-slate-900 font-medium">{test.question}</p>
                         </div>
                         <button
-                          onClick={() => setSelectedQuestion({
-                            agentId: test.agentId,
-                            question: test.question,
-                          })}
-                          className="flex-shrink-0 btn-primary flex items-center gap-2"
+                          onClick={() => handleRunTest(test.agentId, test.question, test.id)}
+                          disabled={runningTestId === test.id}
+                          className="flex-shrink-0 btn-primary flex items-center gap-2 disabled:opacity-50"
                         >
                           <Play className="w-4 h-4" />
-                          Run Test
+                          {runningTestId === test.id ? 'Starting...' : 'Run Test'}
                         </button>
                       </div>
                     ))}

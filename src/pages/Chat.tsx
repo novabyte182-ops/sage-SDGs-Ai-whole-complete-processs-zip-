@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Send, Plus, Sparkles, Heart, GraduationCap, Leaf, ChartBar as BarChart3, Loader as Loader2 } from 'lucide-react';
+import { Send, Plus, Sparkles, Heart, GraduationCap, Leaf, ChartBar as BarChart3, Loader as Loader2, Volume2, VolumeX, Speaker } from 'lucide-react';
 import { AgentId, Message } from '../types';
 import { agents, getAgentById } from '../lib/utils';
 import { generateResponse } from '../lib/aiProvider';
+import { useSpeech } from '../hooks/useSpeech';
 
 const agentIcons: Record<string, React.ElementType> = {
   Sparkles,
@@ -25,6 +26,10 @@ export default function Chat() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hasSentTestQuestion = useRef(false);
+
+  const { speak, stop, isSpeaking, isSupported, autoRead, toggleAutoRead } = useSpeech({ autoRead: false });
+  const lastResponseRef = useRef<string>('');
 
   useEffect(() => {
     if (urlAgentId && agents.some(a => a.id === urlAgentId)) {
@@ -35,6 +40,17 @@ export default function Chat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Auto-read new AI responses
+  useEffect(() => {
+    if (autoRead && messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.role === 'assistant' && lastMessage.content !== lastResponseRef.current) {
+        lastResponseRef.current = lastMessage.content;
+        speak(lastMessage.content);
+      }
+    }
+  }, [messages, autoRead, speak]);
 
   const selectedAgent = getAgentById(selectedAgentId);
   const AgentIcon = agentIcons[selectedAgent?.icon || 'Sparkles'] || Sparkles;
@@ -72,7 +88,7 @@ export default function Chat() {
 
       setMessages(prev => [...prev, assistantMessage]);
     } catch (err) {
-      setError('Failed to get response. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to get response. Please try again.');
       console.error(err);
     } finally {
       setIsLoading(false);
@@ -86,6 +102,63 @@ export default function Chat() {
   const handleNewChat = () => {
     setMessages([]);
     setError(null);
+    lastResponseRef.current = '';
+    hasSentTestQuestion.current = false;
+    stop();
+  };
+
+  // Check for test question on mount and send it
+  useEffect(() => {
+    if (hasSentTestQuestion.current || messages.length > 0 || isLoading) return;
+
+    const testQuestion = sessionStorage.getItem('sage-test-question');
+    const autoSend = sessionStorage.getItem('sage-test-auto-send');
+
+    if (testQuestion && autoSend === 'true') {
+      sessionStorage.removeItem('sage-test-question');
+      sessionStorage.removeItem('sage-test-auto-send');
+      hasSentTestQuestion.current = true;
+
+      const userMessage: Message = {
+        id: generateId(),
+        role: 'user',
+        content: testQuestion,
+        timestamp: new Date(),
+      };
+
+      setMessages([userMessage]);
+      setIsLoading(true);
+
+      generateResponse(
+        selectedAgentId,
+        [userMessage],
+        selectedAgent?.systemPrompt || ''
+      )
+        .then((response) => {
+          const assistantMessage: Message = {
+            id: generateId(),
+            role: 'assistant',
+            content: response,
+            agentId: selectedAgentId,
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, assistantMessage]);
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : 'Failed to get response.');
+        })
+        .finally(() => {
+          setIsLoading(false);
+        });
+    }
+  }, []); // Only run on mount
+
+  const handleSpeakMessage = (content: string) => {
+    if (isSpeaking) {
+      stop();
+    } else {
+      speak(content);
+    }
   };
 
   if (!selectedAgent) {
@@ -113,7 +186,7 @@ export default function Chat() {
                     key={agent.id}
                     onClick={() => {
                       setSelectedAgentId(agent.id);
-                      setMessages([]);
+                      handleNewChat();
                     }}
                     className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${
                       isSelected
@@ -140,6 +213,31 @@ export default function Chat() {
               <Plus className="w-4 h-4" />
               New Chat
             </button>
+
+            {/* Voice Controls */}
+            {isSupported && (
+              <div className="mt-4 p-3 bg-slate-50 rounded-xl">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-600">Auto-read responses</span>
+                  <button
+                    onClick={toggleAutoRead}
+                    className={`p-2 rounded-lg transition-colors ${
+                      autoRead ? 'bg-sage-500 text-white' : 'bg-slate-200 text-slate-600'
+                    }`}
+                  >
+                    {autoRead ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                  </button>
+                </div>
+                {isSpeaking && (
+                  <button
+                    onClick={stop}
+                    className="mt-2 w-full text-xs text-red-500 hover:text-red-600"
+                  >
+                    Stop speaking
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </aside>
 
@@ -147,14 +245,28 @@ export default function Chat() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Agent Header */}
           <div className="glass-card p-4 mb-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl ${selectedAgent.bgColor} flex items-center justify-center`}>
-                <AgentIcon className="w-5 h-5 text-white" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl ${selectedAgent.bgColor} flex items-center justify-center`}>
+                  <AgentIcon className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h1 className="font-semibold text-slate-900">{selectedAgent.name}</h1>
+                  <p className="text-sm text-slate-500">{selectedAgent.sdg.join(', ')}</p>
+                </div>
               </div>
-              <div>
-                <h1 className="font-semibold text-slate-900">{selectedAgent.name}</h1>
-                <p className="text-sm text-slate-500">{selectedAgent.sdg.join(', ')}</p>
-              </div>
+
+              {/* Mobile Voice Toggle */}
+              {isSupported && (
+                <button
+                  onClick={toggleAutoRead}
+                  className={`lg:hidden p-2 rounded-lg transition-colors ${
+                    autoRead ? 'bg-sage-100 text-sage-600' : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  {autoRead ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                </button>
+              )}
             </div>
 
             {/* Mobile Agent Selector */}
@@ -163,7 +275,7 @@ export default function Chat() {
                 value={selectedAgentId}
                 onChange={(e) => {
                   setSelectedAgentId(e.target.value as AgentId);
-                  setMessages([]);
+                  handleNewChat();
                 }}
                 className="input-base text-sm"
               >
@@ -227,9 +339,21 @@ export default function Chat() {
                       <p className="whitespace-pre-wrap text-sm leading-relaxed">
                         {message.content}
                       </p>
-                      <p className="text-xs opacity-50 mt-1">
-                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </p>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-xs opacity-50">
+                          {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                        {/* Speak button for assistant messages */}
+                        {message.role === 'assistant' && isSupported && (
+                          <button
+                            onClick={() => handleSpeakMessage(message.content)}
+                            className="text-xs text-slate-400 hover:text-sage-600 flex items-center gap-1"
+                          >
+                            <Speaker className="w-3 h-3" />
+                            {isSpeaking ? 'Playing' : 'Read'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

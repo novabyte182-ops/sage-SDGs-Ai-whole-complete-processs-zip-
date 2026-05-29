@@ -1,49 +1,60 @@
 import { AgentId, Message } from '../types';
-import { getAgentById, containsSafetyKeywords, safetyResponse } from './utils';
 
-const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
-const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
-const NVIDIA_API_KEY = import.meta.env.VITE_NVIDIA_API_KEY;
-const AI_PROVIDER = import.meta.env.VITE_AI_PROVIDER;
-
-const isValidKey = (key: string | undefined): boolean => {
-  return !!(key && key.length > 10 && key.startsWith('sk-') || key?.startsWith('nvapi-') || key?.startsWith('eyJ'));
-};
-
-const getAvailableProvider = (): string | null => {
-  if (AI_PROVIDER && isValidKey(getKeyForProvider(AI_PROVIDER))) {
-    return AI_PROVIDER;
-  }
-  if (isValidKey(ANTHROPIC_API_KEY)) return 'anthropic';
-  if (isValidKey(OPENAI_API_KEY)) return 'openai';
-  if (isValidKey(NVIDIA_API_KEY)) return 'nvidia';
-  return null;
-};
-
-const getKeyForProvider = (provider: string): string | undefined => {
-  switch (provider) {
-    case 'anthropic': return ANTHROPIC_API_KEY;
-    case 'openai': return OPENAI_API_KEY;
-    case 'nvidia': return NVIDIA_API_KEY;
-    default: return undefined;
-  }
-};
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 
 export const isDemoMode = (): boolean => {
-  return getAvailableProvider() === null;
+  return !SUPABASE_URL;
 };
 
-const generateMockResponse = async (agentId: AgentId, userMessage: string): Promise<string> => {
-  const agent = getAgentById(agentId);
-  if (!agent) return "I'm here to help. What would you like to know?";
-
-  if (agentId === 'mindcare' && containsSafetyKeywords(userMessage)) {
-    return safetyResponse;
+export async function generateResponse(
+  agentId: AgentId,
+  messages: Message[],
+  _systemPrompt?: string
+): Promise<string> {
+  if (!SUPABASE_URL) {
+    return getDemoResponse(agentId);
   }
 
-  await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 700));
+  const formattedHistory = messages.slice(0, -1).map(m => ({
+    role: m.role,
+    content: m.content,
+  }));
 
-  const mockResponses: Record<AgentId, string> = {
+  const lastMessage = messages[messages.length - 1];
+
+  try {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/ai-chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: lastMessage?.content || '',
+        selectedAgent: agentId,
+        chatHistory: formattedHistory,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (data.demoMode) {
+      console.log('Running in demo mode - no API key configured');
+    }
+
+    return data.response || "I couldn't generate a response. Please try again.";
+  } catch (error) {
+    console.error('AI Provider Error:', error);
+    throw new Error('Failed to connect to AI. Please check your connection and try again.');
+  }
+}
+
+function getDemoResponse(agentId: AgentId): string {
+  const demoResponses: Record<AgentId, string> = {
     'sage-core': `I'd be happy to help you learn about the Sustainable Development Goals!
 
 The UN established 17 SDGs in 2015 as a blueprint for peace and prosperity. They address global challenges including poverty, inequality, climate change, environmental degradation, peace, and justice.
@@ -73,8 +84,7 @@ Each goal has specific targets to be achieved by 2030. Would you like me to expl
 
 What aspect of education would you like to explore further?`,
 
-    'mindcare': containsSafetyKeywords(userMessage) ? safetyResponse :
-`Thank you for sharing with me. Your feelings are valid, and it takes courage to reach out.
+    'mindcare': `Thank you for sharing with me. Your feelings are valid, and it takes courage to reach out.
 
 **Here are some small steps you might try:**
 1. Take a few deep breaths – inhale for 4 counts, hold for 2, exhale for 6
@@ -120,116 +130,10 @@ When looking at SDG statistics, consider:
 - The methodology used
 - Data collection frequency
 - Geographic coverage
-- margins of error
+- Margins of error
 
 Would you like to learn about data for a specific SDG?`,
   };
 
-  return mockResponses[agentId] || "I'm here to help with SDG-related questions. What would you like to know?";
-};
-
-export const generateResponse = async (
-  agentId: AgentId,
-  messages: Message[],
-  systemPrompt: string
-): Promise<string> => {
-  const provider = getAvailableProvider();
-
-  if (!provider) {
-    const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
-    return generateMockResponse(agentId, lastUserMessage?.content || '');
-  }
-
-  const formattedMessages = messages.map(m => ({
-    role: m.role,
-    content: m.content,
-  }));
-
-  try {
-    if (provider === 'anthropic') {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY!,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-3-5-haiku-20241022',
-          max_tokens: 1024,
-          system: systemPrompt,
-          messages: formattedMessages,
-        }),
-      });
-
-      const data = await response.json();
-      const content = data.content?.[0]?.text;
-
-      if (agentId === 'mindcare' && containsSafetyKeywords(formattedMessages[formattedMessages.length - 1]?.content || '')) {
-        return safetyResponse;
-      }
-
-      return content || "I apologize, I couldn't generate a response. Please try again.";
-    }
-
-    if (provider === 'openai') {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          max_tokens: 1024,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...formattedMessages,
-          ],
-        }),
-      });
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-
-      if (agentId === 'mindcare' && containsSafetyKeywords(formattedMessages[formattedMessages.length - 1]?.content || '')) {
-        return safetyResponse;
-      }
-
-      return content || "I apologize, I couldn't generate a response. Please try again.";
-    }
-
-    if (provider === 'nvidia') {
-      const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'meta/llama-3.1-8b-instruct',
-          max_tokens: 1024,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...formattedMessages,
-          ],
-        }),
-      });
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-
-      if (agentId === 'mindcare' && containsSafetyKeywords(formattedMessages[formattedMessages.length - 1]?.content || '')) {
-        return safetyResponse;
-      }
-
-      return content || "I apologize, I couldn't generate a response. Please try again.";
-    }
-
-    return generateMockResponse(agentId, formattedMessages[formattedMessages.length - 1]?.content || '');
-  } catch (error) {
-    console.error('AI Provider Error:', error);
-    return "I'm sorry, I encountered an error. Please try again in a moment.";
-  }
-};
+  return demoResponses[agentId] || "I'm here to help with SDG-related questions. What would you like to know?";
+}
