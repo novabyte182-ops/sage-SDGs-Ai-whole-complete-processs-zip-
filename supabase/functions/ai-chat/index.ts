@@ -452,6 +452,8 @@ Deno.serve(async (req: Request) => {
     if (!response) {
       response = getDemoResponse(selectedAgent, message);
       providerUsed = 'demo';
+      console.error('All providers failed. Last error:', lastError);
+      console.error('Attempted providers:', attemptedProviders);
     }
 
     // Safety check for mindcare responses
@@ -466,6 +468,7 @@ Deno.serve(async (req: Request) => {
         provider: providerUsed,
         attemptedProviders: attemptedProviders.length > 0 ? attemptedProviders : undefined,
         demoMode: providerUsed === 'demo',
+        lastError: lastError || undefined,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
